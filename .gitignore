@@ -1,2 +1,8 @@
+# cmake/meson build
 /build
+
+# direnv
 /.direnv
+
+# clangd cache
+/.cache
