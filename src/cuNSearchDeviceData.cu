@@ -37,7 +37,7 @@ namespace cuNSearch
 		d_MinMax.resize(2);
 		CudaHelper::MemcpyHostToDevice(data, CudaHelper::GetPointer(d_MinMax), 2);
 
-		kComputeMinMax << <pointSetImpl->BlockStartsForParticles, pointSetImpl->ThreadsPerBlock >> > (
+		kComputeMinMax <<<pointSetImpl->BlockStartsForParticles, pointSetImpl->ThreadsPerBlock >>> (
 			(Real3*)CudaHelper::GetPointer(pointSetImpl->d_Particles),
 			static_cast<unsigned int>(pointSet.n_points()),
 			m_SearchRadius,
@@ -130,7 +130,7 @@ namespace cuNSearch
 		CudaHelper::CheckLastError();
 		CudaHelper::DeviceSynchronize();
 
-		kInsertParticles_Morton << <pointSetImpl->BlockStartsForParticles, pointSetImpl->ThreadsPerBlock >> > (
+		kInsertParticles_Morton <<<pointSetImpl->BlockStartsForParticles, pointSetImpl->ThreadsPerBlock >>> (
 			gridInfo,
 			(Real3*)CudaHelper::GetPointer(pointSetImpl->d_Particles),
 			CudaHelper::GetPointer(pointSetImpl->d_ParticleCellIndices),
@@ -147,7 +147,7 @@ namespace cuNSearch
 			pointSetImpl->d_CellOffsets.begin());
 		CudaHelper::DeviceSynchronize();
 
-		kCountingSortIndices << <pointSetImpl->BlockStartsForParticles, pointSetImpl->ThreadsPerBlock >> > (
+		kCountingSortIndices <<<pointSetImpl->BlockStartsForParticles, pointSetImpl->ThreadsPerBlock >>> (
 			gridInfo,
 			CudaHelper::GetPointer(pointSetImpl->d_ParticleCellIndices),
 			CudaHelper::GetPointer(pointSetImpl->d_CellOffsets),
@@ -186,7 +186,7 @@ namespace cuNSearch
 		USE_TIMING(Timing::startTiming("Execute kNeighborCount"));
 		d_NeighborCounts.resize(particleCount);
 
-		kComputeCounts << <queryPointSetImpl->BlockStartsForParticles, queryPointSetImpl->ThreadsPerBlock >> > (
+		kComputeCounts <<<queryPointSetImpl->BlockStartsForParticles, queryPointSetImpl->ThreadsPerBlock >>> (
 			(Real3*)CudaHelper::GetPointer(queryPointSetImpl->d_Particles),
 			static_cast<unsigned int>(queryPointSet.n_points()),
 
@@ -228,7 +228,7 @@ namespace cuNSearch
 		USE_TIMING(Timing::stopTiming(PRINT_STATS));
 		USE_TIMING(Timing::startTiming("Execute kNeighborhoodQueryWithCounts"));
 
-		kNeighborhoodQueryWithCounts << <queryPointSetImpl->BlockStartsForParticles, queryPointSetImpl->ThreadsPerBlock >> > (
+		kNeighborhoodQueryWithCounts <<<queryPointSetImpl->BlockStartsForParticles, queryPointSetImpl->ThreadsPerBlock >>> (
 			(Real3*)CudaHelper::GetPointer(queryPointSetImpl->d_Particles),
 			static_cast<unsigned int>(queryPointSet.n_points()),
 
