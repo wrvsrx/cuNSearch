@@ -1,4 +1,5 @@
 #pragma once
+#include "fix-clangd-cuda-lint.hpp"
 // This is a public header. Avoid references to cuda or other external references.
 
 #include <vector>
