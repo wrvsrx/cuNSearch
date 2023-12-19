@@ -14,7 +14,6 @@
 
 #include <chrono>
 #include "IDFactory.h"
-#include "cuNSearch_export.h"
 
 namespace cuNSearch
 {
@@ -34,11 +33,11 @@ namespace cuNSearch
 	class Timing
 	{
 	public:
-		static cuNSearch_EXPORT bool m_dontPrintTimes;
-		static cuNSearch_EXPORT unsigned int m_startCounter;
-		static cuNSearch_EXPORT unsigned int m_stopCounter;
-		static cuNSearch_EXPORT std::stack<TimingHelper> m_timingStack;
-		static cuNSearch_EXPORT std::unordered_map<int, AverageTime> m_averageTimes;
+		static bool m_dontPrintTimes;
+		static unsigned int m_startCounter;
+		static unsigned int m_stopCounter;
+		static std::stack<TimingHelper> m_timingStack;
+		static std::unordered_map<int, AverageTime> m_averageTimes;
 
 		static void reset()
 		{
