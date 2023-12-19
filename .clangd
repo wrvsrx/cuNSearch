@@ -1,0 +1,10 @@
+CompileFlags:
+  Remove: 
+    - "-Xcompiler=-Wall,-Winvalid-pch"
+    - "-Xcompiler=-fPIC"
+    - "--extended-lambda"
+    - "--expt-relaxed-constexpr"
+    - "-Xcompiler=-fopenmp"
+  Add:
+    - "-Xclang"
+    - "-fcuda-allow-variadic-functions"
