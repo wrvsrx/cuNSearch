@@ -1,4 +1,5 @@
 #pragma once
+#include "fix-clangd-cuda-lint.hpp"
 #include "Types.h"
 #include "GridInfo.h"
 #include <thrust/device_vector.h>

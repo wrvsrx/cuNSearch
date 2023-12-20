@@ -1,4 +1,5 @@
 #pragma once
+#include "fix-clangd-cuda-lint.hpp"
 #include <thrust/device_vector.h>
 
 class CUDAException : public std::runtime_error
