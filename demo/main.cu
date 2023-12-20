@@ -1,7 +1,7 @@
 #include "cuNSearch.h"
-#include "Timing.h"
 
 #include <iostream>
+#include <chrono>
 #include <vector>
 #include <array>
 #include <cmath>
@@ -59,7 +59,7 @@ void testCuNSearch()
 			}
 		}
 	}
-	std::random_shuffle(positions.begin(), positions.end());
+	std::shuffle(positions.begin(), positions.end(), std::mt19937(std::random_device()()));
 	printf("Number of particles: %d \n", static_cast<int>(positions.size()));
 
 	//Create neighborhood search instance
@@ -76,9 +76,11 @@ void testCuNSearch()
 			nsearch.point_set(pointSetIndex).sort_field((Real3*)nsearch.point_set(pointSetIndex).GetPoints());
 		}
 
-		Timing::reset();
+    auto const startTime = std::chrono::high_resolution_clock::now();
 		nsearch.find_neighbors();
-		Timing::printAverageTimes();
+    auto const endTime = std::chrono::high_resolution_clock::now();
+    auto const durationTime = std::chrono::duration<double>(endTime - startTime);
+    std::cout << "time cost: " << durationTime.count() << std::endl;
 	}
 
 	//Neighborhood search result test
