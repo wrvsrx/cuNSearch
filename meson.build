@@ -20,4 +20,4 @@ cuNSearch = library(
   ],
 )
 
-subdir('demo')
+subdir('examples')
