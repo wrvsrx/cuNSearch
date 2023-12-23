@@ -7,7 +7,7 @@
 , eigen
 , python3
 , pystring
-, meson
+, meson-patched
 , pkg-config
 , ninja
 , spdlog
@@ -41,7 +41,7 @@ mkShell {
   '';
   nativeBuildInputs = [
     cmake
-    meson
+    meson-patched
     pkg-config
     ninja
     (haskellPackages.ghcWithPackages (ps: with ps;[
