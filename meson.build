@@ -1,4 +1,5 @@
 project('cuNSearch', 'cpp', 'cuda')
+add_global_arguments('-DCUNSEARCH_USE_DOUBLE_PRECISION', language : 'cuda')
 
 inc = include_directories('include')
 
