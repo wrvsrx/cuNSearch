@@ -198,14 +198,11 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
   auto cellCountB = thrust::device_vector<uint32_t>(numberOfCells, 0);
 
   auto particleCellIdxA = thrust::device_vector<uint32_t>(a);
-  auto sortIdxA = thrust::device_vector<uint32_t>(a);
-  auto reversedSortIdxA = thrust::device_vector<uint32_t>(a);
-
   auto particleOrderInCellA = thrust::device_vector<uint32_t>(a);
 
   // compute idx of cell of particle
   // compute cell count
-  std::cout << "01 compute cell count" << std::endl;
+  // std::cout << "01 compute cell count" << std::endl;
   thrust::for_each(
       thrust::counting_iterator<uint32_t>(0),
       thrust::counting_iterator<uint32_t>(a),
@@ -228,17 +225,17 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
       });
 
   // compute offset
-  std::cout << "02 compute cell offset" << std::endl;
+  // std::cout << "02 compute cell offset" << std::endl;
   thrust::exclusive_scan(cellCountB.begin(), cellCountB.end(),
                          cellOffsetB.begin());
 
-  assert(cellCountB.back() + cellOffsetB.back() == a);
+  // assert(cellCountB.back() + cellOffsetB.back() == a);
 
   // this can fuse orderOfParticleInCellA, for code clear we doesn't do that
   auto orderOfParticleAccordingToCellA = thrust::device_vector<uint32_t>(a);
   auto mapFromOrderToParticleC = thrust::device_vector<uint32_t>(a);
 
-  std::cout << "03 compute orderOfParticleAccordingToCellA" << std::endl;
+  // std::cout << "03 compute orderOfParticleAccordingToCellA" << std::endl;
   thrust::transform(
       particleCellIdxA.begin(), particleCellIdxA.end(),
       particleOrderInCellA.begin(), orderOfParticleAccordingToCellA.begin(),
@@ -248,34 +245,34 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
         return offsetOfCellB[idxOfCellOfParticle] + orderOfParticleInCell;
       });
 
-  std::cout << "03.5 " << std::endl;
-  thrust::for_each(cellOffsetB.begin(), cellOffsetB.end(),
-                   [=] __device__(uint32_t idx) { assert(idx <= a); });
-  std::cout << "03.55 " << std::endl;
-  thrust::for_each_n(thrust::counting_iterator<uint32_t>(0), a,
-                     [orderOfParticleInCellA =
-                          thrust::raw_pointer_cast(particleOrderInCellA.data()),
-                      cellCountB = thrust::raw_pointer_cast(cellCountB.data()),
-                      idxOfCellOfParticleA = thrust::raw_pointer_cast(
-                          particleCellIdxA.data())] __device__(uint32_t idx) {
-                       auto const cellIdx = idxOfCellOfParticleA[idx];
-                       auto const cellCount = cellCountB[cellIdx];
-                       assert(orderOfParticleInCellA[idx] < cellCount);
-                     });
-  thrust::for_each(particleOrderInCellA.begin(), particleOrderInCellA.end(),
-                   [=] __device__(uint32_t idx) { assert(idx < a); });
-  std::cout << "03.6 " << std::endl;
-  thrust::for_each(orderOfParticleAccordingToCellA.begin(),
-                   orderOfParticleAccordingToCellA.end(),
-                   [=] __device__(uint32_t idx) { assert(idx < a); });
+  // // std::cout << "03.5 " << std::endl;
+  // thrust::for_each(cellOffsetB.begin(), cellOffsetB.end(),
+  //                  [=] __device__(uint32_t idx) { assert(idx <= a); });
+  // // std::cout << "03.55 " << std::endl;
+  // thrust::for_each_n(thrust::counting_iterator<uint32_t>(0), a,
+  //                    [orderOfParticleInCellA =
+  //                         thrust::raw_pointer_cast(particleOrderInCellA.data()),
+  //                     cellCountB = thrust::raw_pointer_cast(cellCountB.data()),
+  //                     idxOfCellOfParticleA = thrust::raw_pointer_cast(
+  //                         particleCellIdxA.data())] __device__(uint32_t idx) {
+  //                      auto const cellIdx = idxOfCellOfParticleA[idx];
+  //                      auto const cellCount = cellCountB[cellIdx];
+  //                      assert(orderOfParticleInCellA[idx] < cellCount);
+  //                    });
+  // thrust::for_each(particleOrderInCellA.begin(), particleOrderInCellA.end(),
+  //                  [=] __device__(uint32_t idx) { assert(idx < a); });
+  // // std::cout << "03.6 " << std::endl;
+  // thrust::for_each(orderOfParticleAccordingToCellA.begin(),
+  //                  orderOfParticleAccordingToCellA.end(),
+  //                  [=] __device__(uint32_t idx) { assert(idx < a); });
 
-  std::cout << "04 compute mapFromOrderToParticleC" << std::endl;
+  // std::cout << "04 compute mapFromOrderToParticleC" << std::endl;
   thrust::gather(orderOfParticleAccordingToCellA.begin(),
                  orderOfParticleAccordingToCellA.end(),
                  thrust::counting_iterator<uint32_t>(0),
                  mapFromOrderToParticleC.begin());
 
-  std::cout << "05 counting neighbors" << std::endl;
+  // std::cout << "05 counting neighbors" << std::endl;
   auto particleNeighborCountD = thrust::device_vector<uint32_t>(d, 0);
   auto wrappedQueryPointD = thrust::device_ptr<Vec const>(queryPointD);
   auto queryPointNeighborCountD = thrust::device_vector<uint32_t>(d);
@@ -317,7 +314,7 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
       });
 
   // compute neighbors offset
-  std::cout << "06" << std::endl;
+  // std::cout << "06" << std::endl;
   auto queryPointNeighborOffsetD = thrust::device_vector<uint32_t>(d);
   thrust::exclusive_scan(queryPointNeighborCountD.begin(),
                          queryPointNeighborCountD.end(),
@@ -326,12 +323,12 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
   auto const totalNeighborCount =
       queryPointNeighborOffsetD.back() + queryPointNeighborCountD.back();
 
-  std::cout << "07" << std::endl;
+  // std::cout << "07" << std::endl;
   auto neighborsOfQueryPoint =
       thrust::device_vector<uint32_t>(totalNeighborCount);
 
   // fill neighbors
-  std::cout << "08" << std::endl;
+  // std::cout << "08" << std::endl;
   thrust::for_each_n(
       thrust::counting_iterator<uint32_t>(0), d,
       [countOfCellB = thrust::raw_pointer_cast(cellCountB.data()),
