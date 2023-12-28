@@ -1,3 +1,4 @@
+#pragma once
 // input: points, radius
 // output: hashed grid with point information
 
@@ -9,8 +10,10 @@
 
 #include "fix-clangd-cuda-lint.hpp"
 #include <Eigen/Eigen>
+#include <Eigen/src/Core/GenericPacketMath.h>
 #include <cstdint>
 #include <iostream>
+#include <map>
 #include <thrust/detail/config/host_device.h>
 #include <thrust/detail/raw_pointer_cast.h>
 #include <thrust/device_ptr.h>
@@ -28,16 +31,58 @@ template <std::size_t dim> using Cell = Eigen::Vector<uint32_t, dim>;
 
 struct Neighbors {
   thrust::device_vector<uint32_t> offset;
+  thrust::device_vector<uint32_t> counter;
   thrust::device_vector<uint32_t> neighbors;
 };
 
-} // namespace pbal
-
-namespace pbal {
 template <typename real, std::size_t dim> struct BoundBox {
   Eigen::Vector<real, dim> min, max;
 };
 
+template <typename real, std::size_t dim> struct CellParam {
+  Eigen::Vector<uint32_t, dim> gridDimension;
+  uint32_t particleCount;
+  BoundBox<real, dim> boundBox;
+  real spacing;
+};
+
+template <typename real, std::size_t dim> struct ParticleDistributionInCell {
+  CellParam<real, dim> param;
+  thrust::device_vector<uint32_t> particleCellIdxA, particleOrderA,
+      mapFromOrderToParticleA;
+  thrust::device_vector<uint32_t> countB, offsetB;
+  ParticleDistributionInCell(uint32_t a, uint32_t b)
+      : particleCellIdxA(a), particleOrderA(a), mapFromOrderToParticleA(a),
+        countB(b), offsetB(b) {}
+  ParticleDistributionInCell() = default;
+  auto resize(uint32_t a, uint32_t b) -> void {
+    particleCellIdxA.resize(a);
+    particleOrderA.resize(a);
+    mapFromOrderToParticleA.resize(a);
+    countB.resize(b);
+    offsetB.resize(b);
+  }
+};
+
+template <typename real, std::size_t dim>
+auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+                   real const spacing,
+                   Eigen::Vector<real, dim> const *queryPointD,
+                   uint32_t const d,
+                   ParticleDistributionInCell<real, dim> &cellInformaitonBuffer,
+                   Neighbors &output) -> void;
+
+template <typename real, std::size_t dim>
+auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+                   real const spacing,
+                   Eigen::Vector<real, dim> const *queryPointD,
+                   uint32_t const d) -> Neighbors;
+
+} // namespace pbal
+
+// --- implementation ---
+
+namespace pbal {
 template <typename real, std::size_t dim>
 auto computeBoundBox(thrust::device_ptr<Eigen::Vector<real, dim> const> pointA,
                      uint32_t n) -> BoundBox<real, dim> {
@@ -57,13 +102,6 @@ auto computeBoundBox(thrust::device_ptr<Eigen::Vector<real, dim> const> pointA,
         return Box{lower, upper};
       });
 }
-
-template <typename real, std::size_t dim> struct CellParam {
-  Eigen::Vector<uint32_t, dim> gridDimension;
-  uint32_t particleCount;
-  BoundBox<real, dim> boundBox;
-  real spacing;
-};
 
 template <typename real, std::size_t dim>
 auto ceilBoundBox(BoundBox<real, dim> boundBox, real spacing)
@@ -179,38 +217,37 @@ traverseAroundCellNeighbor(Eigen::Vector<uint32_t, dim> center, Op op) -> void {
 }
 
 template <typename real, std::size_t dim>
-auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
-                   real const spacing,
-                   Eigen::Vector<real, dim> const *queryPointD,
-                   uint32_t const d) -> Neighbors {
+auto computeCellInformation(
+    thrust::device_ptr<Eigen::Vector<real, dim> const> const pointA,
+    uint32_t const a, real const spacing,
+    ParticleDistributionInCell<real, dim> &cellBuffer) -> void {
   using Vec = Eigen::Vector<real, dim>;
   using Cell = Eigen::Vector<uint32_t, dim>;
-  auto const wrapperedPointA = thrust::device_ptr<Vec const>(pointA);
   // compute cell param
   auto const unpaddedCellParam =
-      computeCellParam<real, dim>(wrapperedPointA, a, spacing);
+      computeCellParam<real, dim>(pointA, a, spacing);
   // pad cell param to avoid boundary check
   auto const cellParam = padCellParam<real, dim>(unpaddedCellParam);
-  auto const numberOfCells = product<uint32_t, dim>(cellParam.gridDimension);
+  cellBuffer.param = cellParam;
+  auto const numberOfCells =
+      product<uint32_t, dim>(cellBuffer.param.gridDimension);
 
   // allocate cell memory
-  auto cellOffsetB = thrust::device_vector<uint32_t>(numberOfCells);
-  auto cellCountB = thrust::device_vector<uint32_t>(numberOfCells, 0);
-
-  auto particleCellIdxA = thrust::device_vector<uint32_t>(a);
-  auto particleOrderInCellA = thrust::device_vector<uint32_t>(a);
+  cellBuffer.resize(a, numberOfCells);
 
   // compute idx of cell of particle
   // compute cell count
-  // std::cout << "01 compute cell count" << std::endl;
+  // particleOrderA is fuse for two purpose: particleOrderInCell and
+  // particleOrder std::cout << "01 compute cell count" << std::endl;
   thrust::for_each(
       thrust::counting_iterator<uint32_t>(0),
       thrust::counting_iterator<uint32_t>(a),
-      [particleCellIdxA = thrust::raw_pointer_cast(particleCellIdxA.data()),
-       cellCountB = thrust::raw_pointer_cast(cellCountB.data()),
+      [particleCellIdxA =
+           thrust::raw_pointer_cast(cellBuffer.particleCellIdxA.data()),
+       cellCountB = thrust::raw_pointer_cast(cellBuffer.countB.data()),
        pointA = pointA,
-       particleOrderInCellA =
-           thrust::raw_pointer_cast(particleOrderInCellA.data()),
+       particleOrderA =
+           thrust::raw_pointer_cast(cellBuffer.particleOrderA.data()),
        gridDimension = cellParam.gridDimension,
        gridMin = cellParam.boundBox.min,
        spacing = cellParam.spacing] __device__(uint32_t particleIdx) -> void {
@@ -221,68 +258,59 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
         }
         auto const index = cellToIndex<dim>(gridDimension, cell);
         particleCellIdxA[particleIdx] = index;
-        particleOrderInCellA[particleIdx] = atomicAdd(cellCountB + index, 1);
+        particleOrderA[particleIdx] = atomicAdd(cellCountB + index, 1);
       });
 
   // compute offset
   // std::cout << "02 compute cell offset" << std::endl;
-  thrust::exclusive_scan(cellCountB.begin(), cellCountB.end(),
-                         cellOffsetB.begin());
+  thrust::exclusive_scan(cellBuffer.countB.begin(), cellBuffer.countB.end(),
+                         cellBuffer.offsetB.begin());
 
-  // assert(cellCountB.back() + cellOffsetB.back() == a);
+  assert(cellBuffer.countB.back() + cellBuffer.offsetB.back() == a);
 
-  // this can fuse orderOfParticleInCellA, for code clear we doesn't do that
-  auto orderOfParticleAccordingToCellA = thrust::device_vector<uint32_t>(a);
-  auto mapFromOrderToParticleC = thrust::device_vector<uint32_t>(a);
-
-  // std::cout << "03 compute orderOfParticleAccordingToCellA" << std::endl;
+  // std::cout << "03 compute cellBuffer.particleOrderA" << std::endl;
   thrust::transform(
-      particleCellIdxA.begin(), particleCellIdxA.end(),
-      particleOrderInCellA.begin(), orderOfParticleAccordingToCellA.begin(),
-      [offsetOfCellB = thrust::raw_pointer_cast(cellOffsetB.data())] __device__(
-          uint32_t idxOfCellOfParticle,
-          uint32_t orderOfParticleInCell) -> uint32_t {
-        return offsetOfCellB[idxOfCellOfParticle] + orderOfParticleInCell;
+      cellBuffer.particleCellIdxA.begin(), cellBuffer.particleCellIdxA.end(),
+      cellBuffer.particleOrderA.begin(), cellBuffer.particleOrderA.begin(),
+      [offsetOfCellB = thrust::raw_pointer_cast(
+           cellBuffer.offsetB
+               .data())] __device__(uint32_t particleCellIdx,
+                                    uint32_t orderOfParticleInCell)
+          -> uint32_t {
+        return offsetOfCellB[particleCellIdx] + orderOfParticleInCell;
       });
 
-  // // std::cout << "03.5 " << std::endl;
-  // thrust::for_each(cellOffsetB.begin(), cellOffsetB.end(),
-  //                  [=] __device__(uint32_t idx) { assert(idx <= a); });
-  // // std::cout << "03.55 " << std::endl;
-  // thrust::for_each_n(thrust::counting_iterator<uint32_t>(0), a,
-  //                    [orderOfParticleInCellA =
-  //                         thrust::raw_pointer_cast(particleOrderInCellA.data()),
-  //                     cellCountB = thrust::raw_pointer_cast(cellCountB.data()),
-  //                     idxOfCellOfParticleA = thrust::raw_pointer_cast(
-  //                         particleCellIdxA.data())] __device__(uint32_t idx) {
-  //                      auto const cellIdx = idxOfCellOfParticleA[idx];
-  //                      auto const cellCount = cellCountB[cellIdx];
-  //                      assert(orderOfParticleInCellA[idx] < cellCount);
-  //                    });
-  // thrust::for_each(particleOrderInCellA.begin(), particleOrderInCellA.end(),
-  //                  [=] __device__(uint32_t idx) { assert(idx < a); });
-  // // std::cout << "03.6 " << std::endl;
-  // thrust::for_each(orderOfParticleAccordingToCellA.begin(),
-  //                  orderOfParticleAccordingToCellA.end(),
-  //                  [=] __device__(uint32_t idx) { assert(idx < a); });
-
   // std::cout << "04 compute mapFromOrderToParticleC" << std::endl;
-  thrust::gather(orderOfParticleAccordingToCellA.begin(),
-                 orderOfParticleAccordingToCellA.end(),
+  thrust::gather(cellBuffer.particleOrderA.begin(),
+                 cellBuffer.particleOrderA.end(),
                  thrust::counting_iterator<uint32_t>(0),
-                 mapFromOrderToParticleC.begin());
+                 cellBuffer.mapFromOrderToParticleA.begin());
+}
+
+template <typename real, std::size_t dim>
+auto findNeighborsForParticleDistribution(
+    Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+    ParticleDistributionInCell<real, dim> const &cellInformation,
+    Eigen::Vector<real, dim> const *queryPointD, uint32_t const d,
+    Neighbors &neighbors) -> void {
+  using Vec = Eigen::Vector<real, dim>;
+  using Cell = Eigen::Vector<uint32_t, dim>;
+
+  auto const cellParam = cellInformation.param;
+  auto const numberOfCells = cellInformation.countB.size();
+
+  neighbors.counter.resize(d);
+  thrust::fill(neighbors.counter.begin(), neighbors.counter.end(), 0);
+  neighbors.offset.resize(d);
 
   // std::cout << "05 counting neighbors" << std::endl;
-  auto particleNeighborCountD = thrust::device_vector<uint32_t>(d, 0);
   auto wrappedQueryPointD = thrust::device_ptr<Vec const>(queryPointD);
-  auto queryPointNeighborCountD = thrust::device_vector<uint32_t>(d);
   thrust::transform(
-      wrappedQueryPointD, wrappedQueryPointD + d,
-      queryPointNeighborCountD.begin(),
-      [=, cellCountB = thrust::raw_pointer_cast(cellCountB.data()),
-       cellOffsetB = thrust::raw_pointer_cast(cellOffsetB.data()),
-       mapFromOrderToParticleC =
-           thrust::raw_pointer_cast(mapFromOrderToParticleC.data()),
+      wrappedQueryPointD, wrappedQueryPointD + d, neighbors.counter.begin(),
+      [=, cellCountB = thrust::raw_pointer_cast(cellInformation.countB.data()),
+       cellOffsetB = thrust::raw_pointer_cast(cellInformation.offsetB.data()),
+       mapFromOrderToParticleA = thrust::raw_pointer_cast(
+           cellInformation.mapFromOrderToParticleA.data()),
        pointA = pointA, gridDimension = cellParam.gridDimension,
        gridMin = cellParam.boundBox.min,
        spacing = cellParam.spacing] __device__(Vec p) -> uint32_t {
@@ -299,7 +327,7 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
               auto const cellStart = cellOffsetB[cellIdx];
               for (auto i = cellStart; i < cellStart + cellCount; ++i) {
                 assert(i < a);
-                auto const particleIdx = mapFromOrderToParticleC[i];
+                auto const particleIdx = mapFromOrderToParticleA[i];
                 assert(particleIdx < a);
                 auto const point = pointA[particleIdx];
                 auto const diff = decltype(p)(point - p);
@@ -315,31 +343,28 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
 
   // compute neighbors offset
   // std::cout << "06" << std::endl;
-  auto queryPointNeighborOffsetD = thrust::device_vector<uint32_t>(d);
-  thrust::exclusive_scan(queryPointNeighborCountD.begin(),
-                         queryPointNeighborCountD.end(),
-                         queryPointNeighborOffsetD.begin());
+  thrust::exclusive_scan(neighbors.counter.begin(), neighbors.counter.end(),
+                         neighbors.offset.begin());
 
   auto const totalNeighborCount =
-      queryPointNeighborOffsetD.back() + queryPointNeighborCountD.back();
+      neighbors.counter.back() + neighbors.offset.back();
 
   // std::cout << "07" << std::endl;
-  auto neighborsOfQueryPoint =
-      thrust::device_vector<uint32_t>(totalNeighborCount);
+  neighbors.neighbors.resize(totalNeighborCount);
 
   // fill neighbors
   // std::cout << "08" << std::endl;
   thrust::for_each_n(
       thrust::counting_iterator<uint32_t>(0), d,
-      [countOfCellB = thrust::raw_pointer_cast(cellCountB.data()),
-       offsetOfCellB = thrust::raw_pointer_cast(cellOffsetB.data()),
-       mapFromOrderToParticleC =
-           thrust::raw_pointer_cast(mapFromOrderToParticleC.data()),
+      [countOfCellB = thrust::raw_pointer_cast(cellInformation.countB.data()),
+       offsetOfCellB = thrust::raw_pointer_cast(cellInformation.offsetB.data()),
+       mapFromOrderToParticleA = thrust::raw_pointer_cast(
+           cellInformation.mapFromOrderToParticleA.data()),
        pointA = pointA, queryPointD = queryPointD,
        queryPointNeighborOffsetD =
-           thrust::raw_pointer_cast(queryPointNeighborOffsetD.data()),
+           thrust::raw_pointer_cast(neighbors.offset.data()),
        neighborsOfQueryPoint =
-           thrust::raw_pointer_cast(neighborsOfQueryPoint.data()),
+           thrust::raw_pointer_cast(neighbors.neighbors.data()),
        gridDimension = cellParam.gridDimension,
        gridMin = cellParam.boundBox.min,
        spacing = cellParam.spacing] __device__(uint32_t queryPointIdx) -> void {
@@ -352,7 +377,7 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
               auto const cellCount = countOfCellB[cellIdx];
               auto const cellStart = offsetOfCellB[cellIdx];
               for (auto i = cellStart; i < cellStart + cellCount; ++i) {
-                auto const particleIdx = mapFromOrderToParticleC[i];
+                auto const particleIdx = mapFromOrderToParticleA[i];
                 auto const point = pointA[particleIdx];
                 auto const diff = point - p;
                 auto const distance2 = diff.dot(diff);
@@ -364,6 +389,35 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
               }
             });
       });
-  return Neighbors{queryPointNeighborOffsetD, neighborsOfQueryPoint};
+}
+
+template <typename real, std::size_t dim>
+auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+                   real const spacing,
+                   Eigen::Vector<real, dim> const *queryPointD,
+                   uint32_t const d,
+                   ParticleDistributionInCell<real, dim> &cellInformaitonBuffer,
+                   Neighbors &output) -> void {
+  auto const wrapperedPointA =
+      thrust::device_ptr<Eigen::Vector<real, dim> const>(pointA);
+  computeCellInformation<real, dim>(wrapperedPointA, a, spacing,
+                                    cellInformaitonBuffer);
+  findNeighborsForParticleDistribution<real, dim>(
+      pointA, a, cellInformaitonBuffer, queryPointD, d, output);
+}
+
+template <typename real, std::size_t dim>
+auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+                   real const spacing,
+                   Eigen::Vector<real, dim> const *queryPointD,
+                   uint32_t const d) -> Neighbors {
+
+  auto cellBuffer = ParticleDistributionInCell<real, dim>();
+  auto neighbors = Neighbors{};
+
+  findNeighbors<real, dim>(pointA, a, spacing, queryPointD, d, cellBuffer,
+                           neighbors);
+
+  return neighbors;
 }
 } // namespace pbal
