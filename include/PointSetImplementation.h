@@ -32,7 +32,6 @@ namespace cuNSearch
 
 		void copyToDevice();
 
-	private:
 		friend NeighborhoodSearch;
 		friend cuNSearchDeviceData;
 

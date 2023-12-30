@@ -17,9 +17,9 @@ namespace cuNSearch
 	class NeighborhoodSearch
 	{
 	private:
-		std::vector<PointSet> pointSets;
 
 	public:
+		std::vector<PointSet> pointSets;
 
 		/**
 		* Constructor.

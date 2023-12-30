@@ -258,7 +258,7 @@ namespace cuNSearch
 				cudaFreeHost(neighborSet.Neighbors);
 			}
 
-			neighborSet.NeighborCountAllocationSize = static_cast<unsigned int>(totalNeighborCount * 1.5);
+			neighborSet.NeighborCountAllocationSize = static_cast<unsigned int>(totalNeighborCount);
 			cudaMallocHost(&neighborSet.Neighbors, sizeof(uint) * neighborSet.NeighborCountAllocationSize);
 		}
 		if (neighborSet.ParticleCountAllocationSize < particleCount)
@@ -269,7 +269,7 @@ namespace cuNSearch
 				cudaFreeHost(neighborSet.Counts);
 			}
 
-			neighborSet.ParticleCountAllocationSize = static_cast<unsigned int>(particleCount * 1.5);
+			neighborSet.ParticleCountAllocationSize = static_cast<unsigned int>(particleCount);
 			cudaMallocHost(&neighborSet.Offsets, sizeof(uint) * neighborSet.ParticleCountAllocationSize);
 			cudaMallocHost(&neighborSet.Counts, sizeof(uint) * neighborSet.ParticleCountAllocationSize);
 		}

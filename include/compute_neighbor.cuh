@@ -12,6 +12,7 @@
 #include <Eigen/Eigen>
 #include <Eigen/src/Core/GenericPacketMath.h>
 #include <cstdint>
+#include <fmt/format.h>
 #include <iostream>
 #include <map>
 #include <thrust/detail/config/host_device.h>
@@ -27,8 +28,6 @@
 #include <type_traits>
 
 namespace pbal {
-template <std::size_t dim> using Cell = Eigen::Vector<uint32_t, dim>;
-
 struct Neighbors {
   thrust::device_vector<uint32_t> offset;
   thrust::device_vector<uint32_t> counter;
@@ -51,17 +50,7 @@ template <typename real, std::size_t dim> struct ParticleDistributionInCell {
   thrust::device_vector<uint32_t> particleCellIdxA, particleOrderA,
       mapFromOrderToParticleA;
   thrust::device_vector<uint32_t> countB, offsetB;
-  ParticleDistributionInCell(uint32_t a, uint32_t b)
-      : particleCellIdxA(a), particleOrderA(a), mapFromOrderToParticleA(a),
-        countB(b), offsetB(b) {}
   ParticleDistributionInCell() = default;
-  auto resize(uint32_t a, uint32_t b) -> void {
-    particleCellIdxA.resize(a);
-    particleOrderA.resize(a);
-    mapFromOrderToParticleA.resize(a);
-    countB.resize(b);
-    offsetB.resize(b);
-  }
 };
 
 template <typename real, std::size_t dim>
@@ -143,9 +132,9 @@ auto computeCellParam(
 template <typename real, std::size_t dim>
 auto padCellParam(CellParam<real, dim> cellParam) -> CellParam<real, dim> {
   for (auto i = decltype(dim)(0); i < dim; ++i) {
-    cellParam.boundBox.min[i] -= cellParam.spacing;
-    cellParam.boundBox.max[i] += cellParam.spacing;
-    cellParam.gridDimension[i] += 2;
+    cellParam.boundBox.min[i] -= 2 * cellParam.spacing;
+    cellParam.boundBox.max[i] += 2 * cellParam.spacing;
+    cellParam.gridDimension[i] += 4;
   }
   return cellParam;
 }
@@ -163,7 +152,7 @@ template <std::size_t dim>
 __device__ __host__ auto cellToIndex(Eigen::Vector<uint32_t, dim> gridDimension,
                                      Eigen::Vector<uint32_t, dim> cell)
     -> uint32_t {
-  auto res = static_cast<uint32_t>(0);
+  auto res = uint32_t(0);
   for (auto i = decltype(dim)(0); i < dim; ++i) {
     res *= gridDimension[dim - 1 - i];
     res += cell[dim - 1 - i];
@@ -233,7 +222,15 @@ auto computeCellInformation(
       product<uint32_t, dim>(cellBuffer.param.gridDimension);
 
   // allocate cell memory
-  cellBuffer.resize(a, numberOfCells);
+  cellBuffer.particleCellIdxA.resize(a);
+  cellBuffer.particleOrderA.resize(a);
+  cellBuffer.mapFromOrderToParticleA.resize(a);
+  cellBuffer.countB.resize(numberOfCells);
+  cellBuffer.offsetB.resize(numberOfCells);
+
+  thrust::fill(cellBuffer.particleOrderA.begin(),
+               cellBuffer.particleOrderA.end(), uint32_t(0));
+  thrust::fill(cellBuffer.countB.begin(), cellBuffer.countB.end(), 0);
 
   // compute idx of cell of particle
   // compute cell count
@@ -272,12 +269,12 @@ auto computeCellInformation(
   thrust::transform(
       cellBuffer.particleCellIdxA.begin(), cellBuffer.particleCellIdxA.end(),
       cellBuffer.particleOrderA.begin(), cellBuffer.particleOrderA.begin(),
-      [offsetOfCellB = thrust::raw_pointer_cast(
+      [cellOffsetB = thrust::raw_pointer_cast(
            cellBuffer.offsetB
                .data())] __device__(uint32_t particleCellIdx,
                                     uint32_t orderOfParticleInCell)
           -> uint32_t {
-        return offsetOfCellB[particleCellIdx] + orderOfParticleInCell;
+        return cellOffsetB[particleCellIdx] + orderOfParticleInCell;
       });
 
   // std::cout << "04 compute mapFromOrderToParticleC" << std::endl;
@@ -303,8 +300,11 @@ auto findNeighborsForParticleDistribution(
   thrust::fill(neighbors.counter.begin(), neighbors.counter.end(), 0);
   neighbors.offset.resize(d);
 
-  // std::cout << "05 counting neighbors" << std::endl;
   auto wrappedQueryPointD = thrust::device_ptr<Vec const>(queryPointD);
+
+  // gpu 跟 cpu 有不同的舍入算法
+
+  // std::cout << "05 counting neighbors" << std::endl;
   thrust::transform(
       wrappedQueryPointD, wrappedQueryPointD + d, neighbors.counter.begin(),
       [=, cellCountB = thrust::raw_pointer_cast(cellInformation.countB.data()),
@@ -314,13 +314,20 @@ auto findNeighborsForParticleDistribution(
        pointA = pointA, gridDimension = cellParam.gridDimension,
        gridMin = cellParam.boundBox.min,
        spacing = cellParam.spacing] __device__(Vec p) -> uint32_t {
+        // if (p != Eigen::Vector<real, dim>{0.0, 0.0, 0.0})
+        //   return 0;
+        // return 1;
         auto const center = computeCell<real, dim>(gridMin, spacing, p);
         auto neighborCount = uint32_t(0);
-        assert(center[0] > 0);
-        assert(center[1] > 0);
-        assert(center[2] > 0);
-        traverseAroundCellNeighbor<dim>(
-            center, [=, &neighborCount] __device__(Cell cell) -> void {
+        for (auto i = decltype(dim)(0); i < dim; ++i) {
+          assert(center[i] > 0);
+          assert(center[i] + 1 < gridDimension[i]);
+        }
+        for (auto i_ = -1; i_ < 2; ++i_) {
+          for (auto j = -1; j < 2; ++j) {
+            for (auto k = -1; k < 2; ++k) {
+              auto const cell =
+                  Cell{center[0] + i_, center[1] + j, center[2] + k};
               auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
               assert(cellIdx < numberOfCells);
               auto const cellCount = cellCountB[cellIdx];
@@ -337,7 +344,28 @@ auto findNeighborsForParticleDistribution(
                   ++neighborCount;
                 }
               }
-            });
+            }
+          }
+        }
+        // traverseAroundCellNeighbor<dim>(
+        //     center, [=, &neighborCount] __device__(Cell cell) -> void {
+        //       auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
+        //       assert(cellIdx < numberOfCells);
+        //       auto const cellCount = cellCountB[cellIdx];
+        //       auto const cellStart = cellOffsetB[cellIdx];
+        //       for (auto i = cellStart; i < cellStart + cellCount; ++i) {
+        //         assert(i < a);
+        //         auto const particleIdx = mapFromOrderToParticleA[i];
+        //         assert(particleIdx < a);
+        //         auto const point = pointA[particleIdx];
+        //         auto const diff = decltype(p)(point - p);
+        //         auto const distance2 = diff.dot(diff);
+        //         if (distance2 < spacing * spacing &&
+        //             distance2 > static_cast<real>(0.0)) {
+        //           ++neighborCount;
+        //         }
+        //       }
+        //     });
         return neighborCount;
       });
 
@@ -348,6 +376,8 @@ auto findNeighborsForParticleDistribution(
 
   auto const totalNeighborCount =
       neighbors.counter.back() + neighbors.offset.back();
+  std::cout << fmt::format("total neighbors: {}", totalNeighborCount)
+            << std::endl;
 
   // std::cout << "07" << std::endl;
   neighbors.neighbors.resize(totalNeighborCount);
@@ -369,10 +399,13 @@ auto findNeighborsForParticleDistribution(
        gridMin = cellParam.boundBox.min,
        spacing = cellParam.spacing] __device__(uint32_t queryPointIdx) -> void {
         auto const p = queryPointD[queryPointIdx];
-        auto const cell = computeCell<real, dim>(gridMin, spacing, p);
+        auto const center = computeCell<real, dim>(gridMin, spacing, p);
         auto fillOffset = queryPointNeighborOffsetD[queryPointIdx];
-        traverseAroundCellNeighbor<dim>(
-            cell, [=, &fillOffset] __device__(Cell cell) {
+        for (auto i_ = -1; i_ < 2; ++i_) {
+          for (auto j = -1; j < 2; ++j) {
+            for (auto k = -1; k < 2; ++k) {
+              auto const cell =
+                  Cell{center[0] + i_, center[1] + j, center[2] + k};
               auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
               auto const cellCount = countOfCellB[cellIdx];
               auto const cellStart = offsetOfCellB[cellIdx];
@@ -387,7 +420,26 @@ auto findNeighborsForParticleDistribution(
                   ++fillOffset;
                 }
               }
-            });
+            }
+          }
+        }
+        // traverseAroundCellNeighbor<dim>(
+        //     center, [=, &fillOffset] __device__(Cell cell) {
+        //       auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
+        //       auto const cellCount = countOfCellB[cellIdx];
+        //       auto const cellStart = offsetOfCellB[cellIdx];
+        //       for (auto i = cellStart; i < cellStart + cellCount; ++i) {
+        //         auto const particleIdx = mapFromOrderToParticleA[i];
+        //         auto const point = pointA[particleIdx];
+        //         auto const diff = point - p;
+        //         auto const distance2 = diff.dot(diff);
+        //         if (distance2 < spacing * spacing &&
+        //             distance2 > static_cast<real>(0.0)) {
+        //           neighborsOfQueryPoint[fillOffset] = particleIdx;
+        //           ++fillOffset;
+        //         }
+        //       }
+        //     });
       });
 }
 

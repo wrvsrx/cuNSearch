@@ -1,6 +1,9 @@
 project('cuNSearch', 'cpp', 'cuda')
 add_global_arguments('-DCUNSEARCH_USE_DOUBLE_PRECISION', language : 'cuda')
 
+fmt = dependency('fmt')
+spdlog = dependency('spdlog')
+
 inc = include_directories('include')
 
 cuNSearch = library(

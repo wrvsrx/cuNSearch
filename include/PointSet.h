@@ -124,7 +124,7 @@ public:
 	template <typename T>
 	void sort_field(T* lst) const;
 
-private:
+// private:
 	friend NeighborhoodSearch;
 	friend cuNSearchDeviceData;
 
