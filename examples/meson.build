@@ -15,4 +15,5 @@ executable(
     '--expt-relaxed-constexpr',
   ],
   link_with: cuNSearch,
+  dependencies: [ fmt ],
 )
