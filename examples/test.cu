@@ -200,5 +200,6 @@ auto main() -> int {
   }();
   dump("second", secondNeighborHost);
 
-  checkNeighborConsistent(firstNeighborHost, secondNeighborHost);
+  checkNeighborConsistent<real, dim>(firstNeighborHost, secondNeighborHost,
+                                     spacing, hPointA, hPointA);
 }
