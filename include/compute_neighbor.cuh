@@ -63,6 +63,7 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
 // --- implementation start ---
 
 namespace pbal {
+template <std::size_t dim> using Cell = Eigen::Vector<int32_t, dim>;
 template <typename real, std::size_t dim> struct BoundBox {
   Eigen::Vector<real, dim> min, max;
 };
@@ -76,8 +77,8 @@ template <typename real, std::size_t dim> struct CellParam {
 
 template <typename real, std::size_t dim> struct ParticleDistributionInCell {
   CellParam<real, dim> param;
-  thrust::device_vector<uint32_t> particleCellIdxA, particleOrderA,
-      mapFromOrderToParticleA;
+  thrust::device_vector<int32_t> particleCellIdxA;
+  thrust::device_vector<uint32_t> particleOrderA, mapFromOrderToParticleA;
   thrust::device_vector<uint32_t> countB, offsetB;
 };
 template <typename real, std::size_t dim>
@@ -158,9 +159,9 @@ auto product(Eigen::Vector<T, dim> v) -> T {
 
 template <std::size_t dim>
 __device__ __host__ auto cellToIndex(Eigen::Vector<uint32_t, dim> gridDimension,
-                                     Eigen::Vector<uint32_t, dim> cell)
-    -> uint32_t {
-  auto res = uint32_t(0);
+                                     Eigen::Vector<int32_t, dim> cell)
+    -> int32_t {
+  auto res = int32_t(0);
   for (auto i = decltype(dim)(0); i < dim; ++i) {
     res *= gridDimension[dim - 1 - i];
     res += cell[dim - 1 - i];
@@ -171,14 +172,14 @@ __device__ __host__ auto cellToIndex(Eigen::Vector<uint32_t, dim> gridDimension,
 template <typename real, std::size_t dim>
 __host__ __device__ auto computeCell(Eigen::Vector<real, dim> gridMin,
                                      real spacing, Eigen::Vector<real, dim> pos)
-    -> Eigen::Vector<uint32_t, dim> {
+    -> Eigen::Vector<int32_t, dim> {
   auto const relativePosition = decltype(pos)(pos - gridMin);
   auto const cellF =
       decltype(pos)((relativePosition / spacing).array().floor());
   auto const cell = [cellF] __device__ __host__ {
-    auto res = Eigen::Vector<uint32_t, dim>();
+    auto res = Eigen::Vector<int32_t, dim>();
     for (auto i = decltype(dim)(0); i < dim; ++i) {
-      res[i] = uint32_t(cellF[i]);
+      res[i] = int32_t(cellF[i]);
     }
     return res;
   }();
@@ -187,7 +188,7 @@ __host__ __device__ auto computeCell(Eigen::Vector<real, dim> gridMin,
 
 template <std::size_t dim, std::size_t recurDepth, typename Op>
 __host__ __device__ auto
-_tranverseImplement(Eigen::Vector<uint32_t, dim> const cell, Op const &op)
+_tranverseImplement(Eigen::Vector<int32_t, dim> const cell, Op const &op)
     -> void {
   if constexpr (recurDepth < dim) {
     auto const recurDim = dim - 1 - recurDepth;
@@ -209,7 +210,7 @@ _tranverseImplement(Eigen::Vector<uint32_t, dim> const cell, Op const &op)
 // necessary
 template <std::size_t dim, typename Op>
 __host__ __device__ auto
-traverseAroundCellNeighbor(Eigen::Vector<uint32_t, dim> center, Op op) -> void {
+traverseAroundCellNeighbor(Eigen::Vector<int32_t, dim> center, Op op) -> void {
   _tranverseImplement<dim, 0, Op>(center, op);
 }
 
@@ -219,7 +220,6 @@ auto computeCellInformation(
     uint32_t const a, real const spacing,
     ParticleDistributionInCell<real, dim> &cellBuffer) -> void {
   using Vec = Eigen::Vector<real, dim>;
-  using Cell = Eigen::Vector<uint32_t, dim>;
   // compute cell param
   auto const unpaddedCellParam =
       computeCellParam<real, dim>(pointA, a, spacing);
@@ -256,8 +256,7 @@ auto computeCellInformation(
        gridDimension = cellParam.gridDimension,
        gridMin = cellParam.boundBox.min,
        spacing = cellParam.spacing] __device__(uint32_t particleIdx) -> void {
-        auto const cell =
-            computeCell<real, dim>(gridMin, spacing, pointA[particleIdx]);
+        auto const cell = computeCell<real, dim>(gridMin, spacing, pointA[particleIdx]);
         for (auto i = decltype(dim)(0); i < dim; ++i) {
           PBAL_NEIGHBOR_SEARCH_ASSERT(cell[i] < gridDimension[i]);
         }
@@ -300,7 +299,6 @@ auto findNeighborsForParticleDistribution(
     Eigen::Vector<real, dim> const *queryPointD, uint32_t const d,
     Neighbors &neighbors) -> void {
   using Vec = Eigen::Vector<real, dim>;
-  using Cell = Eigen::Vector<uint32_t, dim>;
 
   auto const cellParam = cellInformation.param;
   auto const numberOfCells = cellInformation.countB.size();
@@ -333,7 +331,11 @@ auto findNeighborsForParticleDistribution(
         }
 #endif
         traverseAroundCellNeighbor<dim>(
-            center, [=, &neighborCount] __device__(Cell cell) -> void {
+            center, [=, &neighborCount] __device__(Cell<dim> cell) -> void {
+              for (auto i = decltype(dim)(0); i < dim; ++i) {
+                if (cell[i] < 0 || cell[i] >= gridDimension[i])
+                  return;
+              }
               auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
               PBAL_NEIGHBOR_SEARCH_ASSERT(cellIdx < numberOfCells);
               auto const cellCount = cellCountB[cellIdx];
@@ -384,7 +386,11 @@ auto findNeighborsForParticleDistribution(
         auto const center = computeCell<real, dim>(gridMin, spacing, p);
         auto fillOffset = queryPointNeighborOffsetD[queryPointIdx];
         traverseAroundCellNeighbor<dim>(
-            center, [=, &fillOffset] __device__(Cell cell) {
+            center, [=, &fillOffset] __device__(Cell<dim> cell) {
+              for (auto i = decltype(dim)(0); i < dim; ++i) {
+                if (cell[i] < 0 || cell[i] >= gridDimension[i])
+                  return;
+              }
               auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
               auto const cellCount = countOfCellB[cellIdx];
               auto const cellStart = offsetOfCellB[cellIdx];

@@ -98,45 +98,45 @@ auto main() -> int {
             << std::endl;
   auto normalDis = std::uniform_real_distribution<real>(0.0, 1.0);
   auto const gen = [&]() -> double { return normalDis(engine); };
-  auto const randomSequence = [&] {
-    std::vector<real> res(totalNum * dim);
-    std::generate(res.begin(), res.end(), gen);
-    return res;
-  }();
 
-  std::cout << "finish generating sequence" << std::endl;
-
-  auto const dPointA = [&] {
+  auto const initRandomPoints = [&](uint32_t n, real range) {
+    auto const randomSequence = [&] {
+      std::vector<real> res(n * dim);
+      std::generate(res.begin(), res.end(), gen);
+      return res;
+    }();
     auto const dRandomSequence = thrust::device_vector<real>(randomSequence);
     auto const randomSequencePtr =
         thrust::device_ptr<Eigen::Vector<real, dim> const>(
             (Eigen::Vector<real, dim> const *)(thrust::raw_pointer_cast(
                 dRandomSequence.data())));
-    auto res = thrust::device_vector<Eigen::Vector<real, dim>>(totalNum);
+    auto res = thrust::device_vector<Eigen::Vector<real, dim>>(n);
     thrust::transform(
-        randomSequencePtr, randomSequencePtr + totalNum, res.begin(),
-        [=] __device__(Eigen::Vector<real, dim> d) { return r * d * n; });
+        randomSequencePtr, randomSequencePtr + n, res.begin(),
+        [=] __device__(Eigen::Vector<real, dim> d) { return d * range; });
     return res;
-  }();
+  };
 
-  // auto const dPointA = [] {
-  //   auto res = initGrid<real, dim>(n, r);
-  //   thrust::default_random_engine g(1);
-  //   thrust::shuffle(res.begin() + 1, res.end(), g);
-  //   return res;
-  // }();
-
-  std::cout << "finish generating points" << std::endl;
+  auto const dPointA = initRandomPoints(totalNum, n * r);
+  auto const dQPointA = initRandomPoints(2 * totalNum, 10 * n * r);
 
   auto const hPointA = thrust::host_vector<Eigen::Vector<real, dim>>(dPointA);
+  auto const hQPointA = thrust::host_vector<Eigen::Vector<real, dim>>(dQPointA);
+
+  std::cout << "finish generating points" << std::endl;
 
   auto cellInformation = pbal::ParticleDistributionInCell<real, dim>();
   auto neighbors = pbal::Neighbors();
   {
     auto const startTime = std::chrono::high_resolution_clock::now();
     auto const pPointA = thrust::raw_pointer_cast(dPointA.data());
-    pbal::findNeighbors<real, dim>(pPointA, totalNum, spacing, pPointA,
-                                   totalNum, cellInformation, neighbors);
+    auto const pQPointA = thrust::raw_pointer_cast(dQPointA.data());
+    pbal::computeCellInformation<real, dim>(dPointA.data(), dPointA.size(),
+                                            spacing, cellInformation);
+    std::cout << "finish compute cell information" << std::endl;
+    pbal::findNeighborsForParticleDistribution<real, dim>(
+        pPointA, dPointA.size(), cellInformation, pQPointA, dQPointA.size(),
+        neighbors);
     auto const endTime = std::chrono::high_resolution_clock::now();
     auto const durationTime =
         std::chrono::duration<double>(endTime - startTime);
@@ -156,21 +156,13 @@ auto main() -> int {
               << neighbor.neighborB.size() << '\n'
               << neighbor.offsetA[0] << '\n'
               << neighbor.counterA[0] << '\n';
-    std::cout << "first point: " << hPointA[0].format(CommaInitFmt) << '\n'
-              << fmt::format("first point neighbor num: {}\n",
-                             neighbor.counterA[0])
-              << "first point's neighbors:\n";
-    for (auto i = neighbor.offsetA[0];
-         i < neighbor.offsetA[0] + neighbor.counterA[0]; ++i) {
-      std::cout << "neighbor " << i << ": "
-                << hPointA[neighbor.neighborB[i]].format(CommaInitFmt) << '\n';
-    }
     std::cout << "----- dump end -----\n";
   };
   dump("first", firstNeighborHost);
 
   cuNSearch::NeighborhoodSearch nsearch(spacing);
-  nsearch.add_point_set((real const *)(hPointA.data()), totalNum);
+  nsearch.add_point_set((real const *)(hPointA.data()), hPointA.size());
+  nsearch.add_point_set((real const *)(hQPointA.data()), hQPointA.size());
   {
     auto const startTime = std::chrono::high_resolution_clock::now();
     nsearch.find_neighbors();
@@ -182,7 +174,7 @@ auto main() -> int {
 
   auto const secondNeighborHost = [&nsearch] {
     auto res = NeighborsHost{};
-    auto const &ps = nsearch.point_set(0);
+    auto const &ps = nsearch.point_set(1);
     auto const num = ps.n_points();
     res.counterA.resize(num);
     res.offsetA.resize(num);
@@ -200,6 +192,5 @@ auto main() -> int {
   }();
   dump("second", secondNeighborHost);
 
-  checkNeighborConsistent<real, dim>(firstNeighborHost, secondNeighborHost,
-                                     spacing, hPointA, hPointA);
+  checkNeighborConsistent<real, dim>(firstNeighborHost, secondNeighborHost, spacing, hPointA, hQPointA);
 }
