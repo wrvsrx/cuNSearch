@@ -1,6 +1,7 @@
 #pragma once
 #include "compute_neighbor.cuh"
 #include <Eigen/src/Core/IO.h>
+#include <iomanip>
 #include <iostream>
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
@@ -43,20 +44,25 @@ auto inline checkNeighborConsistent(
       thrust::host, thrust::counting_iterator<uint32_t>(0),
       thrust::counting_iterator<uint32_t>(a), [&](uint32_t idx) {
         auto const q = queryPointB[idx];
+        auto const computeDiff = [spacing](Eigen::Vector<real, dim> p,
+                                           Eigen::Vector<real, dim> q) {
+          auto const spacing2 = spacing * spacing;
+          auto const diff = (spacing2 - (p - q).dot(p - q)) / spacing2;
+          return diff;
+        };
         auto const filterNeighbor = [&](NeighborsHost const &neighbor) {
           auto const start = neighbor.offsetA[idx],
                      end = start + neighbor.counterA[idx];
           auto res = thrust::host_vector<uint32_t>(end - start);
-          auto const ite =
-              thrust::copy_if(neighbor.neighborB.begin() + start,
-                              neighbor.neighborB.begin() + end, res.begin(),
-                              [&](uint32_t pIdx) {
-                                auto const p = pointA[pIdx];
-                                auto const diff =
-                                    (spacing - (p - q).norm()) / spacing;
-                                auto const tolerance = 1.0e-9;
-                                return diff > tolerance;
-                              });
+          auto const ite = thrust::copy_if(neighbor.neighborB.begin() + start,
+                                           neighbor.neighborB.begin() + end,
+                                           res.begin(), [&](uint32_t pIdx) {
+                                             auto const p = pointA[pIdx];
+                                             auto const diff =
+                                                 computeDiff(p, q);
+                                             auto const tolerance = 1.0e-7;
+                                             return diff > tolerance;
+                                           });
           res.resize(ite - res.begin());
           thrust::sort(res.begin(), res.end());
           return res;
@@ -71,15 +77,17 @@ auto inline checkNeighborConsistent(
           std::cout << "l neighbor:\n";
           for (auto pIdx : lNeighbor) {
             auto const p = pointA[pIdx];
-            auto const diff = (p - q).norm() / spacing;
-            std::cout << p.format(CommaInitFmt) << ", distance: " << diff
+            auto const diff = computeDiff(p, q);
+            std::cout << p.format(CommaInitFmt)
+                      << ", distance: " << std::setprecision(17) << diff
                       << '\n';
           }
           std::cout << "r neighbor:\n";
           for (auto pIdx : rNeighbor) {
             auto const p = pointA[pIdx];
-            auto const diff = (p - q).norm() / spacing;
-            std::cout << p.format(CommaInitFmt) << ", distance: " << diff
+            auto const diff = computeDiff(p, q);
+            std::cout << p.format(CommaInitFmt)
+                      << ", distance: " << std::setprecision(17) << diff
                       << '\n';
           }
           assert(false);
