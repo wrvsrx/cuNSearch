@@ -1,20 +1,8 @@
 #pragma once
-// input: points, radius
-// output: hashed grid with point information
-
-// input: hashed grid with point information, position
-// output: count around position
-
-// input: hashed grid with point information, positions and their count
-// output: neighbored list
-
 #include "fix-clangd-cuda-lint.hpp"
 #include <Eigen/Eigen>
-#include <Eigen/src/Core/GenericPacketMath.h>
 #include <cstdint>
-#include <fmt/format.h>
 #include <iostream>
-#include <map>
 #include <thrust/detail/config/host_device.h>
 #include <thrust/detail/raw_pointer_cast.h>
 #include <thrust/device_ptr.h>
@@ -24,8 +12,14 @@
 #include <thrust/scan.h>
 #include <thrust/transform.h>
 #include <thrust/transform_reduce.h>
-#include <tuple>
-#include <type_traits>
+
+#ifdef PBAL_NEIGHBOR_SEARCH_CHECK
+#define PBAL_NEIGHBOR_SEARCH_ASSERT(x) PBAL_NEIGHBOR_SEARCH_ASSERT(x)
+#else
+#define PBAL_NEIGHBOR_SEARCH_ASSERT(x) ((void)0)
+#endif
+
+// --- declaration start ---
 
 namespace pbal {
 struct Neighbors {
@@ -34,6 +28,41 @@ struct Neighbors {
   thrust::device_vector<uint32_t> neighbors;
 };
 
+template <typename real, std::size_t dim> struct ParticleDistributionInCell;
+
+template <typename real, std::size_t dim>
+auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+                   real const spacing,
+                   Eigen::Vector<real, dim> const *queryPointD,
+                   uint32_t const d) -> Neighbors;
+
+template <typename real, std::size_t dim>
+auto computeCellInformation(
+    thrust::device_ptr<Eigen::Vector<real, dim> const> const pointA,
+    uint32_t const a, real const spacing,
+    ParticleDistributionInCell<real, dim> &output) -> void;
+
+template <typename real, std::size_t dim>
+auto findNeighborsForParticleDistribution(
+    Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+    ParticleDistributionInCell<real, dim> const &cellInformation,
+    Eigen::Vector<real, dim> const *queryPointD, uint32_t const d,
+    Neighbors &neighbors) -> void;
+
+template <typename real, std::size_t dim>
+auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
+                   real const spacing,
+                   Eigen::Vector<real, dim> const *queryPointD,
+                   uint32_t const d,
+                   ParticleDistributionInCell<real, dim> &cellInformaitonBuffer,
+                   Neighbors &output) -> void;
+} // namespace pbal
+
+// --- declaration end ---
+
+// --- implementation start ---
+
+namespace pbal {
 template <typename real, std::size_t dim> struct BoundBox {
   Eigen::Vector<real, dim> min, max;
 };
@@ -50,34 +79,13 @@ template <typename real, std::size_t dim> struct ParticleDistributionInCell {
   thrust::device_vector<uint32_t> particleCellIdxA, particleOrderA,
       mapFromOrderToParticleA;
   thrust::device_vector<uint32_t> countB, offsetB;
-  ParticleDistributionInCell() = default;
 };
-
-template <typename real, std::size_t dim>
-auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
-                   real const spacing,
-                   Eigen::Vector<real, dim> const *queryPointD,
-                   uint32_t const d,
-                   ParticleDistributionInCell<real, dim> &cellInformaitonBuffer,
-                   Neighbors &output) -> void;
-
-template <typename real, std::size_t dim>
-auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
-                   real const spacing,
-                   Eigen::Vector<real, dim> const *queryPointD,
-                   uint32_t const d) -> Neighbors;
-
-} // namespace pbal
-
-// --- implementation ---
-
-namespace pbal {
 template <typename real, std::size_t dim>
 auto computeBoundBox(thrust::device_ptr<Eigen::Vector<real, dim> const> pointA,
                      uint32_t n) -> BoundBox<real, dim> {
   using Vec = Eigen::Vector<real, dim>;
   using Box = BoundBox<real, dim>;
-  assert(n > 0);
+  PBAL_NEIGHBOR_SEARCH_ASSERT(n > 0);
   auto const init = Box{*pointA, *pointA};
   return thrust::transform_reduce(
       pointA, pointA + n,
@@ -186,7 +194,7 @@ _tranverseImplement(Eigen::Vector<uint32_t, dim> const cell, Op const &op)
     for (auto i = int32_t(-1); i < 2; ++i) {
       auto const newCell = [cell, i] {
         auto res = cell;
-        assert(res[recurDim] > 0);
+        PBAL_NEIGHBOR_SEARCH_ASSERT(res[recurDim] > 0);
         res[recurDim] += i;
         return res;
       }();
@@ -251,7 +259,7 @@ auto computeCellInformation(
         auto const cell =
             computeCell<real, dim>(gridMin, spacing, pointA[particleIdx]);
         for (auto i = decltype(dim)(0); i < dim; ++i) {
-          assert(cell[i] < gridDimension[i]);
+          PBAL_NEIGHBOR_SEARCH_ASSERT(cell[i] < gridDimension[i]);
         }
         auto const index = cellToIndex<dim>(gridDimension, cell);
         particleCellIdxA[particleIdx] = index;
@@ -263,7 +271,8 @@ auto computeCellInformation(
   thrust::exclusive_scan(cellBuffer.countB.begin(), cellBuffer.countB.end(),
                          cellBuffer.offsetB.begin());
 
-  assert(cellBuffer.countB.back() + cellBuffer.offsetB.back() == a);
+  PBAL_NEIGHBOR_SEARCH_ASSERT(
+      cellBuffer.countB.back() + cellBuffer.offsetB.back() == a);
 
   // std::cout << "03 compute cellBuffer.particleOrderA" << std::endl;
   thrust::transform(
@@ -278,10 +287,10 @@ auto computeCellInformation(
       });
 
   // std::cout << "04 compute mapFromOrderToParticleC" << std::endl;
-  thrust::gather(cellBuffer.particleOrderA.begin(),
-                 cellBuffer.particleOrderA.end(),
-                 thrust::counting_iterator<uint32_t>(0),
-                 cellBuffer.mapFromOrderToParticleA.begin());
+  thrust::scatter(thrust::counting_iterator<uint32_t>(0),
+                  thrust::counting_iterator<uint32_t>(a),
+                  cellBuffer.particleOrderA.begin(),
+                  cellBuffer.mapFromOrderToParticleA.begin());
 }
 
 template <typename real, std::size_t dim>
@@ -302,7 +311,8 @@ auto findNeighborsForParticleDistribution(
 
   auto wrappedQueryPointD = thrust::device_ptr<Vec const>(queryPointD);
 
-  // gpu 跟 cpu 有不同的舍入算法
+  // gpu 跟 cpu
+  // 有不同的舍入算法，所以算出来所处的格子可能不一样，但这个影响不大。
 
   // std::cout << "05 counting neighbors" << std::endl;
   thrust::transform(
@@ -314,58 +324,32 @@ auto findNeighborsForParticleDistribution(
        pointA = pointA, gridDimension = cellParam.gridDimension,
        gridMin = cellParam.boundBox.min,
        spacing = cellParam.spacing] __device__(Vec p) -> uint32_t {
-        // if (p != Eigen::Vector<real, dim>{0.0, 0.0, 0.0})
-        //   return 0;
-        // return 1;
         auto const center = computeCell<real, dim>(gridMin, spacing, p);
         auto neighborCount = uint32_t(0);
+#ifdef PBAL_NEIGHBOR_SEARCH_CHECK
         for (auto i = decltype(dim)(0); i < dim; ++i) {
-          assert(center[i] > 0);
-          assert(center[i] + 1 < gridDimension[i]);
+          PBAL_NEIGHBOR_SEARCH_ASSERT(center[i] > 0);
+          PBAL_NEIGHBOR_SEARCH_ASSERT(center[i] + 1 < gridDimension[i]);
         }
-        for (auto i_ = -1; i_ < 2; ++i_) {
-          for (auto j = -1; j < 2; ++j) {
-            for (auto k = -1; k < 2; ++k) {
-              auto const cell =
-                  Cell{center[0] + i_, center[1] + j, center[2] + k};
+#endif
+        traverseAroundCellNeighbor<dim>(
+            center, [=, &neighborCount] __device__(Cell cell) -> void {
               auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
-              assert(cellIdx < numberOfCells);
+              PBAL_NEIGHBOR_SEARCH_ASSERT(cellIdx < numberOfCells);
               auto const cellCount = cellCountB[cellIdx];
               auto const cellStart = cellOffsetB[cellIdx];
               for (auto i = cellStart; i < cellStart + cellCount; ++i) {
-                assert(i < a);
+                PBAL_NEIGHBOR_SEARCH_ASSERT(i < a);
                 auto const particleIdx = mapFromOrderToParticleA[i];
-                assert(particleIdx < a);
+                PBAL_NEIGHBOR_SEARCH_ASSERT(particleIdx < a);
                 auto const point = pointA[particleIdx];
                 auto const diff = decltype(p)(point - p);
                 auto const distance2 = diff.dot(diff);
-                if (distance2 < spacing * spacing &&
-                    distance2 > static_cast<real>(0.0)) {
+                if (distance2 < spacing * spacing) {
                   ++neighborCount;
                 }
               }
-            }
-          }
-        }
-        // traverseAroundCellNeighbor<dim>(
-        //     center, [=, &neighborCount] __device__(Cell cell) -> void {
-        //       auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
-        //       assert(cellIdx < numberOfCells);
-        //       auto const cellCount = cellCountB[cellIdx];
-        //       auto const cellStart = cellOffsetB[cellIdx];
-        //       for (auto i = cellStart; i < cellStart + cellCount; ++i) {
-        //         assert(i < a);
-        //         auto const particleIdx = mapFromOrderToParticleA[i];
-        //         assert(particleIdx < a);
-        //         auto const point = pointA[particleIdx];
-        //         auto const diff = decltype(p)(point - p);
-        //         auto const distance2 = diff.dot(diff);
-        //         if (distance2 < spacing * spacing &&
-        //             distance2 > static_cast<real>(0.0)) {
-        //           ++neighborCount;
-        //         }
-        //       }
-        //     });
+            });
         return neighborCount;
       });
 
@@ -376,8 +360,6 @@ auto findNeighborsForParticleDistribution(
 
   auto const totalNeighborCount =
       neighbors.counter.back() + neighbors.offset.back();
-  std::cout << fmt::format("total neighbors: {}", totalNeighborCount)
-            << std::endl;
 
   // std::cout << "07" << std::endl;
   neighbors.neighbors.resize(totalNeighborCount);
@@ -401,11 +383,8 @@ auto findNeighborsForParticleDistribution(
         auto const p = queryPointD[queryPointIdx];
         auto const center = computeCell<real, dim>(gridMin, spacing, p);
         auto fillOffset = queryPointNeighborOffsetD[queryPointIdx];
-        for (auto i_ = -1; i_ < 2; ++i_) {
-          for (auto j = -1; j < 2; ++j) {
-            for (auto k = -1; k < 2; ++k) {
-              auto const cell =
-                  Cell{center[0] + i_, center[1] + j, center[2] + k};
+        traverseAroundCellNeighbor<dim>(
+            center, [=, &fillOffset] __device__(Cell cell) {
               auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
               auto const cellCount = countOfCellB[cellIdx];
               auto const cellStart = offsetOfCellB[cellIdx];
@@ -414,32 +393,12 @@ auto findNeighborsForParticleDistribution(
                 auto const point = pointA[particleIdx];
                 auto const diff = point - p;
                 auto const distance2 = diff.dot(diff);
-                if (distance2 < spacing * spacing &&
-                    distance2 > static_cast<real>(0.0)) {
+                if (distance2 < spacing * spacing) {
                   neighborsOfQueryPoint[fillOffset] = particleIdx;
                   ++fillOffset;
                 }
               }
-            }
-          }
-        }
-        // traverseAroundCellNeighbor<dim>(
-        //     center, [=, &fillOffset] __device__(Cell cell) {
-        //       auto const cellIdx = cellToIndex<dim>(gridDimension, cell);
-        //       auto const cellCount = countOfCellB[cellIdx];
-        //       auto const cellStart = offsetOfCellB[cellIdx];
-        //       for (auto i = cellStart; i < cellStart + cellCount; ++i) {
-        //         auto const particleIdx = mapFromOrderToParticleA[i];
-        //         auto const point = pointA[particleIdx];
-        //         auto const diff = point - p;
-        //         auto const distance2 = diff.dot(diff);
-        //         if (distance2 < spacing * spacing &&
-        //             distance2 > static_cast<real>(0.0)) {
-        //           neighborsOfQueryPoint[fillOffset] = particleIdx;
-        //           ++fillOffset;
-        //         }
-        //       }
-        //     });
+            });
       });
 }
 
@@ -473,3 +432,5 @@ auto findNeighbors(Eigen::Vector<real, dim> const *pointA, uint32_t const a,
   return neighbors;
 }
 } // namespace pbal
+
+// --- implementation end ---

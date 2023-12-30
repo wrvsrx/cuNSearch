@@ -5,6 +5,7 @@
 #include "for-in-multiple-range.hpp"
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <cstdint>
 #include <fmt/format.h>
 #include <iterator>
 #include <random>
@@ -87,7 +88,7 @@ auto main() -> int {
   using real = double;
   auto constexpr dim = std::size_t(3);
   auto constexpr r = static_cast<double>(0.15);
-  auto constexpr n = uint32_t(10);
+  auto constexpr n = uint32_t(100);
   auto constexpr totalNum = pow<uint32_t, dim>(n);
   Eigen::IOFormat const CommaInitFmt(
       Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", ", ", "", "", "", "");
@@ -104,25 +105,25 @@ auto main() -> int {
 
   std::cout << "finish generating sequence" << std::endl;
 
-  // auto const dPointA = [&] {
-  //   auto const dRandomSequence = thrust::device_vector<real>(randomSequence);
-  //   auto const randomSequencePtr =
-  //       thrust::device_ptr<Eigen::Vector<real, dim> const>(
-  //           (Eigen::Vector<real, dim> const *)(thrust::raw_pointer_cast(
-  //               dRandomSequence.data())));
-  //   auto res = thrust::device_vector<Eigen::Vector<real, dim>>(totalNum);
-  //   thrust::transform(
-  //       randomSequencePtr, randomSequencePtr + totalNum, res.begin(),
-  //       [=] __device__(Eigen::Vector<real, dim> d) { return r * d * n; });
-  //   return res;
-  // }();
-
-  auto const dPointA = [] {
-    auto res = initGrid<real, dim>(n, r);
-    thrust::default_random_engine g(1);
-    // thrust::shuffle(res.begin() + 1, res.end(), g);
+  auto const dPointA = [&] {
+    auto const dRandomSequence = thrust::device_vector<real>(randomSequence);
+    auto const randomSequencePtr =
+        thrust::device_ptr<Eigen::Vector<real, dim> const>(
+            (Eigen::Vector<real, dim> const *)(thrust::raw_pointer_cast(
+                dRandomSequence.data())));
+    auto res = thrust::device_vector<Eigen::Vector<real, dim>>(totalNum);
+    thrust::transform(
+        randomSequencePtr, randomSequencePtr + totalNum, res.begin(),
+        [=] __device__(Eigen::Vector<real, dim> d) { return r * d * n; });
     return res;
   }();
+
+  // auto const dPointA = [] {
+  //   auto res = initGrid<real, dim>(n, r);
+  //   thrust::default_random_engine g(1);
+  //   thrust::shuffle(res.begin() + 1, res.end(), g);
+  //   return res;
+  // }();
 
   std::cout << "finish generating points" << std::endl;
 
@@ -133,7 +134,7 @@ auto main() -> int {
   {
     auto const startTime = std::chrono::high_resolution_clock::now();
     auto const pPointA = thrust::raw_pointer_cast(dPointA.data());
-    pbal::findNeighbors<real, dim>(pPointA, totalNum, 1.2 * r, pPointA,
+    pbal::findNeighbors<real, dim>(pPointA, totalNum, 1.3 * r, pPointA,
                                    totalNum, cellInformation, neighbors);
     auto const endTime = std::chrono::high_resolution_clock::now();
     auto const durationTime =
@@ -145,25 +146,6 @@ auto main() -> int {
       neighbors.counter,
       neighbors.neighbors,
   };
-
-  {
-    std::cout << "----- cell start -----\n";
-    auto const cell = pbal::computeCell<real, dim>(
-        cellInformation.param.boundBox.min, cellInformation.param.spacing,
-        hPointA.front());
-    auto const firstParticleCell =
-        pbal::cellToIndex<dim>(cellInformation.param.gridDimension, cell);
-    uint32_t const start = cellInformation.offsetB[firstParticleCell],
-                   end = start + cellInformation.countB[firstParticleCell];
-    for (auto i = start; i < end; ++i) {
-      uint32_t const particleIdx = cellInformation.mapFromOrderToParticleA[i];
-      std::cout << particleIdx << ' '
-                << hPointA[particleIdx].format(CommaInitFmt) << std::endl;
-    }
-    std::cout << cellInformation.countB[firstParticleCell] << ' '
-              << cellInformation.offsetB[firstParticleCell] << std::endl;
-    std::cout << "----- cell end -----\n";
-  }
 
   auto const dump = [&](std::string const &str, NeighborsHost const &neighbor) {
     std::cout << "----- dump start -----\n"
@@ -186,7 +168,7 @@ auto main() -> int {
   };
   dump("first", firstNeighborHost);
 
-  cuNSearch::NeighborhoodSearch nsearch(1.2 * r);
+  cuNSearch::NeighborhoodSearch nsearch(1.3 * r);
   nsearch.add_point_set((real const *)(hPointA.data()), totalNum);
   {
     auto const startTime = std::chrono::high_resolution_clock::now();
@@ -208,5 +190,5 @@ auto main() -> int {
   };
   dump("second", secondNeighborHost);
 
-  // checkNeighborConsistent(firstNeighborHost, secondNeighborHost);
+  checkNeighborConsistent(firstNeighborHost, secondNeighborHost);
 }
